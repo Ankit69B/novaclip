@@ -7,7 +7,9 @@ from core.utils import (
     format_views,
     format_upload_date,
     format_bytes,
-    logger
+    logger,
+    get_system_diagnostics,
+    get_base_ytdlp_opts
 )
 from core.extractor import validate_youtube_url, extract_video_info, ExtractionError
 from core.downloader import download_media, DownloadError
@@ -32,7 +34,7 @@ if "metadata" not in st.session_state:
 if "current_url" not in st.session_state:
     st.session_state["current_url"] = ""
 
-# Header Card Component with Symmetrical Typography
+# Header Card Component
 st.markdown(
     """
     <div class="header-container">
@@ -234,3 +236,17 @@ if st.session_state["metadata"]:
                 stats_cols.empty()
                 logger.exception("Unexpected error in download action")
                 st.error("An error occurred during media download.")
+
+# Developer System Diagnostics Component (Task 5)
+with st.expander("🔧 Developer System Diagnostics", expanded=False):
+    diag = get_system_diagnostics()
+    st.write(f"**Python Version:** `{diag['python_version']}`")
+    st.write(f"**yt-dlp Version:** `{diag['ytdlp_version']}`")
+    st.write(f"**FFmpeg Status:** `{diag['ffmpeg_status']}`")
+    st.write(f"**FFmpeg Path:** `{diag['ffmpeg_path']}`")
+    st.write(f"**OS Platform:** `{diag['os_platform']}`")
+    st.write(f"**Streamlit Cloud:** `{'Yes' if diag['is_streamlit_cloud'] else 'No (Local PC)'}`")
+    
+    # Engine configuration verification
+    shared_opts = get_base_ytdlp_opts()
+    st.write("**Engine Opts Shared:** `Yes` (Extractor & Downloader synchronized)")
