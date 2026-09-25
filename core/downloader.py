@@ -13,6 +13,18 @@ from core.utils import (
     strip_ansi_codes
 )
 
+CLOUD_HTTP_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_4_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4.1 Mobile/15E148 Safari/604.1",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+}
+
+CLOUD_EXTRACTOR_ARGS = {
+    "youtube": {
+        "player_client": ["ios", "android", "mweb"],
+    }
+}
+
 
 class DownloadError(Exception):
     """Custom exception for download operations."""
@@ -90,6 +102,8 @@ def download_media(
         "no_warnings": True,
         "nocheckcertificate": True,
         "no_color": True,
+        "http_headers": CLOUD_HTTP_HEADERS,
+        "extractor_args": CLOUD_EXTRACTOR_ARGS,
     }
 
     if ffmpeg_exe:
@@ -100,7 +114,6 @@ def download_media(
         fmt_id = selected_format.get("format_id")
         
         if height and height > 0:
-            # Use resolution height selector so yt-dlp dynamically fetches fresh stream signatures
             if ffmpeg_ready:
                 ydl_opts["format"] = f"bestvideo[height<={height}]+bestaudio/best[height<={height}]/best"
             else:
@@ -159,10 +172,11 @@ def download_media(
         clean_err = strip_ansi_codes(str(de))
         logger.warning(f"Primary format download failed ({clean_err}), executing fallback...")
         
-        # Robust fallback execution with best available format
+        # Robust fallback execution with iOS mobile client
         try:
             fallback_opts = dict(ydl_opts)
-            fallback_opts["format"] = "bestvideo+bestaudio/best"
+            fallback_opts["format"] = "best[ext=mp4]/best"
+            fallback_opts["extractor_args"] = {"youtube": {"player_client": ["ios", "mweb"]}}
             with yt_dlp.YoutubeDL(fallback_opts) as ydl:
                 info = ydl.extract_info(url, download=True)
                 filename = ydl.prepare_filename(info)
