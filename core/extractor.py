@@ -3,17 +3,16 @@ from typing import Dict, Any, List, Optional
 import yt_dlp
 from core.utils import logger, format_bytes
 
-# Shared yt-dlp configuration to prevent HTTP 403 Forbidden errors on cloud servers
+# Shared yt-dlp configuration to prevent sign-in and HTTP 403 Forbidden errors on cloud servers
 YTDLP_CLOUD_HEADERS = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+    'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_4_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4.1 Mobile/15E148 Safari/604.1',
     'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
     'Accept-Language': 'en-US,en;q=0.9',
 }
 
 YTDLP_EXTRACTOR_ARGS = {
     'youtube': {
-        'player_client': ['mweb', 'android', 'ios', 'web'],
-        'player_skip': ['webpage', 'configs'],
+        'player_client': ['ios', 'mweb', 'android_creator'],
     }
 }
 
@@ -64,7 +63,6 @@ def extract_video_info(url: str) -> Dict[str, Any]:
             if not info:
                 raise ExtractionError("Unable to retrieve video information.")
                 
-            # If the URL is a playlist or multi-video, extract the first entry
             if 'entries' in info and info['entries']:
                 info = info['entries'][0]
 
@@ -90,16 +88,42 @@ def extract_video_info(url: str) -> Dict[str, Any]:
         err_str = str(de).lower()
         logger.error(f"yt-dlp DownloadError for {url}: {de}")
         
+        # If YouTube sent a sign-in or bot challenge prompt, attempt fallback with ios client
+        if "sign in" in err_str or "confirm your age" in err_str or "bot" in err_str:
+            logger.warning("Sign-in/bot challenge detected, attempting fallback extraction...")
+            try:
+                fallback_opts = dict(ydl_opts)
+                fallback_opts['extractor_args'] = {'youtube': {'player_client': ['ios']}}
+                with yt_dlp.YoutubeDL(fallback_opts) as ydl:
+                    info = ydl.extract_info(url.strip(), download=False)
+                    if info:
+                        if 'entries' in info and info['entries']:
+                            info = info['entries'][0]
+                        formats = info.get("formats", [])
+                        return {
+                            "id": info.get("id"),
+                            "title": info.get("title", "Untitled Video"),
+                            "uploader": info.get("uploader") or info.get("channel") or "Unknown Uploader",
+                            "thumbnail": info.get("thumbnail"),
+                            "duration": info.get("duration"),
+                            "upload_date": info.get("upload_date"),
+                            "view_count": info.get("view_count"),
+                            "formats": formats,
+                            "video_options": parse_video_formats(formats),
+                            "audio_options": parse_audio_formats(formats),
+                            "webpage_url": info.get("webpage_url", url),
+                        }
+            except Exception as fe:
+                logger.error(f"Fallback extraction failed: {fe}")
+
         if "private video" in err_str:
             raise ExtractionError("This video is private and cannot be accessed.")
         elif "video unavailable" in err_str or "deleted" in err_str:
             raise ExtractionError("This video is unavailable or has been deleted.")
-        elif "members-only" in err_str or "paywall" in err_str or "sign in" in err_str:
-            raise ExtractionError("This video requires sign-in, membership, or special access.")
+        elif "members-only" in err_str or "join this channel" in err_str:
+            raise ExtractionError("This video is for channel members only.")
         elif "copyright" in err_str:
             raise ExtractionError("This video is unavailable due to copyright restriction.")
-        elif "403" in err_str or "forbidden" in err_str:
-            raise ExtractionError("YouTube restricted cloud access for this video format. Please try selecting a different format or quality option.")
         else:
             raise ExtractionError("Unable to access this video. It may be restricted, private, or unavailable.")
 
@@ -112,7 +136,6 @@ def parse_video_formats(formats: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Filter and group video formats by resolution height."""
     video_formats = []
     
-    # Filter formats that have a video stream
     raw_video = [
         f for f in formats 
         if f.get("vcodec") != "none" and f.get("height") is not None and f.get("height") > 0
@@ -121,13 +144,11 @@ def parse_video_formats(formats: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     if not raw_video:
         return []
 
-    # Group by height (e.g. 2160, 1440, 1080, 720, 480, 360, 240, 144)
     heights = sorted(list(set(f["height"] for f in raw_video)), reverse=True)
     
     for h in heights:
         h_formats = [f for f in raw_video if f.get("height") == h]
         
-        # Sort formats: prefer mp4 container, higher fps, higher filesize/tbr
         def sort_key(f):
             ext_score = 2 if f.get("ext") == "mp4" else 1
             fps = f.get("fps") or 0

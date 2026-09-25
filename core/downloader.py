@@ -14,15 +14,14 @@ from core.utils import (
 )
 
 YTDLP_CLOUD_HEADERS = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+    'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_4_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4.1 Mobile/15E148 Safari/604.1',
     'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
     'Accept-Language': 'en-US,en;q=0.9',
 }
 
 YTDLP_EXTRACTOR_ARGS = {
     'youtube': {
-        'player_client': ['mweb', 'android', 'ios', 'web'],
-        'player_skip': ['webpage', 'configs'],
+        'player_client': ['ios', 'mweb', 'android_creator'],
     }
 }
 
@@ -119,7 +118,6 @@ def download_media(
             ydl_opts["format"] = f"{fmt_id}/best"
         else:
             if not ffmpeg_ready:
-                # If FFmpeg is missing, fall back to best pre-merged format
                 ydl_opts["format"] = "best[ext=mp4]/best"
             else:
                 ydl_opts["format"] = f"{fmt_id}+bestaudio/bestvideo+bestaudio/best"
@@ -146,7 +144,6 @@ def download_media(
             info = ydl.extract_info(url, download=True)
             filename = ydl.prepare_filename(info)
             
-            # Adjust file extension if postprocessors or merge changed output format
             if download_type == "audio" and ffmpeg_ready:
                 ext = selected_format.get("audio_mode", "mp3")
                 filename = str(Path(filename).with_suffix(f".{ext}"))
@@ -156,7 +153,6 @@ def download_media(
 
             final_file = Path(filename)
             
-            # Check if file exists and ensure unique safety
             if final_file.exists():
                 safe_filepath = get_unique_filepath(target_path, final_file.name)
                 if safe_filepath != final_file:
@@ -175,12 +171,13 @@ def download_media(
         clean_err = strip_ansi_codes(str(de))
         logger.error(f"Download error: {clean_err}")
         
-        if "403" in clean_err.lower() or "forbidden" in clean_err.lower():
-            # Attempt fallback download with generic best format for cloud IP restrictions
-            logger.warning("HTTP 403 encountered, attempting fallback format download...")
+        # Fallback handling for sign-in or 403 prompt on cloud servers
+        if "sign in" in clean_err.lower() or "403" in clean_err.lower() or "forbidden" in clean_err.lower():
+            logger.warning("Sign-in / 403 prompt encountered, attempting fallback format download...")
             try:
                 fallback_opts = dict(ydl_opts)
                 fallback_opts["format"] = "best[ext=mp4]/best"
+                fallback_opts['extractor_args'] = {'youtube': {'player_client': ['ios']}}
                 with yt_dlp.YoutubeDL(fallback_opts) as ydl:
                     info = ydl.extract_info(url, download=True)
                     filename = ydl.prepare_filename(info)
@@ -193,7 +190,7 @@ def download_media(
                     }
             except Exception as fe:
                 logger.error(f"Fallback download also failed: {fe}")
-                raise DownloadError("YouTube restricted cloud access for this format (HTTP 403 Forbidden). Try selecting a lower resolution or standard format.")
+                raise DownloadError("YouTube requested sign-in or cloud verification for this video. Try selecting a different format or quality option.")
                 
         if "ffmpeg is not installed" in clean_err.lower():
             raise DownloadError(
