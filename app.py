@@ -1,6 +1,13 @@
+import sys
 import os
-import streamlit as st
 from pathlib import Path
+
+# Guarantee project root directory is in sys.path for Streamlit Cloud deployment
+ROOT_DIR = Path(__file__).resolve().parent
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
+
+import streamlit as st
 from ui.styles import apply_custom_css
 from core.utils import (
     format_duration,
@@ -237,7 +244,7 @@ if st.session_state["metadata"]:
                 logger.exception("Unexpected error in download action")
                 st.error("An error occurred during media download.")
 
-# Developer System Diagnostics Component (Task 5)
+# Developer System Diagnostics Component
 with st.expander("🔧 Developer System Diagnostics", expanded=False):
     diag = get_system_diagnostics()
     st.write(f"**Python Version:** `{diag['python_version']}`")
