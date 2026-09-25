@@ -13,18 +13,6 @@ from core.utils import (
     strip_ansi_codes
 )
 
-YTDLP_CLOUD_HEADERS = {
-    'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_4_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4.1 Mobile/15E148 Safari/604.1',
-    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-    'Accept-Language': 'en-US,en;q=0.9',
-}
-
-YTDLP_EXTRACTOR_ARGS = {
-    'youtube': {
-        'player_client': ['ios', 'mweb', 'android_creator'],
-    }
-}
-
 
 class DownloadError(Exception):
     """Custom exception for download operations."""
@@ -63,7 +51,6 @@ def download_media(
     target_path = Path(output_dir).resolve()
     target_path.mkdir(parents=True, exist_ok=True)
 
-    # Output template formatting
     outtmpl = str(target_path / "%(title)s [%(id)s].%(ext)s")
 
     def progress_hook(d: dict):
@@ -103,8 +90,6 @@ def download_media(
         "no_warnings": True,
         "nocheckcertificate": True,
         "no_color": True,
-        "http_headers": YTDLP_CLOUD_HEADERS,
-        "extractor_args": YTDLP_EXTRACTOR_ARGS,
     }
 
     if ffmpeg_exe:
@@ -171,13 +156,12 @@ def download_media(
         clean_err = strip_ansi_codes(str(de))
         logger.error(f"Download error: {clean_err}")
         
-        # Fallback handling for sign-in or 403 prompt on cloud servers
-        if "sign in" in clean_err.lower() or "403" in clean_err.lower() or "forbidden" in clean_err.lower():
-            logger.warning("Sign-in / 403 prompt encountered, attempting fallback format download...")
+        # Fallback handling
+        if "403" in clean_err.lower() or "forbidden" in clean_err.lower() or "sign in" in clean_err.lower():
+            logger.warning("Download error encountered, attempting fallback format download...")
             try:
                 fallback_opts = dict(ydl_opts)
                 fallback_opts["format"] = "best[ext=mp4]/best"
-                fallback_opts['extractor_args'] = {'youtube': {'player_client': ['ios']}}
                 with yt_dlp.YoutubeDL(fallback_opts) as ydl:
                     info = ydl.extract_info(url, download=True)
                     filename = ydl.prepare_filename(info)
@@ -190,7 +174,7 @@ def download_media(
                     }
             except Exception as fe:
                 logger.error(f"Fallback download also failed: {fe}")
-                raise DownloadError("YouTube requested sign-in or cloud verification for this video. Try selecting a different format or quality option.")
+                raise DownloadError("YouTube restricted this video format. Try selecting a different quality option.")
                 
         if "ffmpeg is not installed" in clean_err.lower():
             raise DownloadError(

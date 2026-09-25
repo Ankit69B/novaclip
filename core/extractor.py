@@ -1,20 +1,7 @@
 import re
 from typing import Dict, Any, List, Optional
 import yt_dlp
-from core.utils import logger, format_bytes
-
-# Shared yt-dlp configuration to prevent sign-in and HTTP 403 Forbidden errors on cloud servers
-YTDLP_CLOUD_HEADERS = {
-    'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_4_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4.1 Mobile/15E148 Safari/604.1',
-    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-    'Accept-Language': 'en-US,en;q=0.9',
-}
-
-YTDLP_EXTRACTOR_ARGS = {
-    'youtube': {
-        'player_client': ['ios', 'mweb', 'android_creator'],
-    }
-}
+from core.utils import logger, format_bytes, strip_ansi_codes
 
 
 class ExtractionError(Exception):
@@ -44,92 +31,80 @@ def extract_video_info(url: str) -> Dict[str, Any]:
     if not validate_youtube_url(url):
         raise ExtractionError("Invalid YouTube URL. Please enter a valid video or shorts link.")
 
-    ydl_opts = {
+    url_clean = url.strip()
+
+    base_opts = {
         'quiet': True,
         'no_warnings': True,
         'skip_download': True,
         'extract_flat': False,
         'no_color': True,
         'nocheckcertificate': True,
-        'http_headers': YTDLP_CLOUD_HEADERS,
-        'extractor_args': YTDLP_EXTRACTOR_ARGS,
     }
 
-    try:
-        logger.info(f"Extracting metadata for URL: {url}")
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url.strip(), download=False)
-            
-            if not info:
-                raise ExtractionError("Unable to retrieve video information.")
-                
-            if 'entries' in info and info['entries']:
-                info = info['entries'][0]
+    # Multi-stage extraction strategies
+    strategies = [
+        # Strategy 1: Standard yt-dlp extraction
+        base_opts,
+        # Strategy 2: Mobile Web & Desktop client fallback
+        {**base_opts, 'extractor_args': {'youtube': {'player_client': ['mweb', 'web']}}},
+        # Strategy 3: Android & iOS client fallback
+        {**base_opts, 'extractor_args': {'youtube': {'player_client': ['android', 'ios']}}},
+    ]
 
-            formats = info.get("formats", [])
+    last_error = None
 
-            metadata = {
-                "id": info.get("id"),
-                "title": info.get("title", "Untitled Video"),
-                "uploader": info.get("uploader") or info.get("channel") or "Unknown Uploader",
-                "thumbnail": info.get("thumbnail"),
-                "duration": info.get("duration"),
-                "upload_date": info.get("upload_date"),
-                "view_count": info.get("view_count"),
-                "formats": formats,
-                "video_options": parse_video_formats(formats),
-                "audio_options": parse_audio_formats(formats),
-                "webpage_url": info.get("webpage_url", url),
-            }
-            logger.info(f"Successfully extracted info for: '{metadata['title']}' ({metadata['id']})")
-            return metadata
+    for idx, ydl_opts in enumerate(strategies):
+        try:
+            logger.info(f"Attempting extraction (strategy {idx+1}) for URL: {url_clean}")
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(url_clean, download=False)
+                if info:
+                    if 'entries' in info and info['entries']:
+                        info = info['entries'][0]
 
-    except yt_dlp.utils.DownloadError as de:
-        err_str = str(de).lower()
-        logger.error(f"yt-dlp DownloadError for {url}: {de}")
-        
-        # If YouTube sent a sign-in or bot challenge prompt, attempt fallback with ios client
-        if "sign in" in err_str or "confirm your age" in err_str or "bot" in err_str:
-            logger.warning("Sign-in/bot challenge detected, attempting fallback extraction...")
-            try:
-                fallback_opts = dict(ydl_opts)
-                fallback_opts['extractor_args'] = {'youtube': {'player_client': ['ios']}}
-                with yt_dlp.YoutubeDL(fallback_opts) as ydl:
-                    info = ydl.extract_info(url.strip(), download=False)
-                    if info:
-                        if 'entries' in info and info['entries']:
-                            info = info['entries'][0]
-                        formats = info.get("formats", [])
-                        return {
-                            "id": info.get("id"),
-                            "title": info.get("title", "Untitled Video"),
-                            "uploader": info.get("uploader") or info.get("channel") or "Unknown Uploader",
-                            "thumbnail": info.get("thumbnail"),
-                            "duration": info.get("duration"),
-                            "upload_date": info.get("upload_date"),
-                            "view_count": info.get("view_count"),
-                            "formats": formats,
-                            "video_options": parse_video_formats(formats),
-                            "audio_options": parse_audio_formats(formats),
-                            "webpage_url": info.get("webpage_url", url),
-                        }
-            except Exception as fe:
-                logger.error(f"Fallback extraction failed: {fe}")
+                    formats = info.get("formats", [])
 
-        if "private video" in err_str:
-            raise ExtractionError("This video is private and cannot be accessed.")
-        elif "video unavailable" in err_str or "deleted" in err_str:
-            raise ExtractionError("This video is unavailable or has been deleted.")
-        elif "members-only" in err_str or "join this channel" in err_str:
-            raise ExtractionError("This video is for channel members only.")
-        elif "copyright" in err_str:
-            raise ExtractionError("This video is unavailable due to copyright restriction.")
-        else:
-            raise ExtractionError("Unable to access this video. It may be restricted, private, or unavailable.")
+                    metadata = {
+                        "id": info.get("id"),
+                        "title": info.get("title", "Untitled Video"),
+                        "uploader": info.get("uploader") or info.get("channel") or "Unknown Uploader",
+                        "thumbnail": info.get("thumbnail"),
+                        "duration": info.get("duration"),
+                        "upload_date": info.get("upload_date"),
+                        "view_count": info.get("view_count"),
+                        "formats": formats,
+                        "video_options": parse_video_formats(formats),
+                        "audio_options": parse_audio_formats(formats),
+                        "webpage_url": info.get("webpage_url", url_clean),
+                    }
+                    logger.info(f"Successfully extracted info for: '{metadata['title']}' ({metadata['id']})")
+                    return metadata
 
-    except Exception as e:
-        logger.exception(f"Unexpected error during metadata extraction for {url}")
-        raise ExtractionError("An unexpected error occurred while fetching video details.")
+        except yt_dlp.utils.DownloadError as de:
+            last_error = de
+            logger.warning(f"Strategy {idx+1} failed for {url_clean}: {de}")
+            continue
+        except Exception as e:
+            last_error = e
+            logger.warning(f"Strategy {idx+1} unexpected error for {url_clean}: {e}")
+            continue
+
+    # Evaluate error if all strategies fail
+    err_str = str(last_error).lower() if last_error else ""
+    logger.error(f"All extraction strategies failed for {url_clean}: {last_error}")
+
+    if "private video" in err_str:
+        raise ExtractionError("This video is private and cannot be accessed.")
+    elif "video unavailable" in err_str or "deleted" in err_str:
+        raise ExtractionError("This video is unavailable or has been deleted.")
+    elif "members-only" in err_str or "join this channel" in err_str:
+        raise ExtractionError("This video is for channel members only.")
+    elif "copyright" in err_str:
+        raise ExtractionError("This video is unavailable due to copyright restriction.")
+    else:
+        clean_msg = strip_ansi_codes(str(last_error)) if last_error else "Unknown error"
+        raise ExtractionError(f"Unable to access video: {clean_msg}")
 
 
 def parse_video_formats(formats: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
