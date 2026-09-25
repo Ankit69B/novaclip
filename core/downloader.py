@@ -10,20 +10,9 @@ from core.utils import (
     format_duration,
     check_ffmpeg_available,
     find_ffmpeg_executable,
-    strip_ansi_codes
+    strip_ansi_codes,
+    get_base_ytdlp_opts
 )
-
-CLOUD_HTTP_HEADERS = {
-    "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_4_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4.1 Mobile/15E148 Safari/604.1",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    "Accept-Language": "en-US,en;q=0.9",
-}
-
-CLOUD_EXTRACTOR_ARGS = {
-    "youtube": {
-        "player_client": ["ios", "android", "mweb"],
-    }
-}
 
 
 class DownloadError(Exception):
@@ -56,7 +45,10 @@ def download_media(
     container_pref: str = "mp4",
     progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None
 ) -> Dict[str, Any]:
-    """Execute media download using yt-dlp with FFmpeg stream merging and real-time progress reporting."""
+    """Execute media download using yt-dlp with FFmpeg stream merging and real-time progress reporting.
+    
+    Uses shared base configuration identical to extraction phase.
+    """
     ffmpeg_exe = find_ffmpeg_executable()
     ffmpeg_ready = ffmpeg_exe is not None
 
@@ -95,40 +87,33 @@ def download_media(
                 "filename": d.get("filename", "")
             })
 
-    ydl_opts = {
+    # Use shared base ytdlp options to ensure compatibility with metadata phase
+    ydl_opts = get_base_ytdlp_opts({
         "outtmpl": outtmpl,
         "progress_hooks": [progress_hook],
-        "quiet": True,
-        "no_warnings": True,
-        "nocheckcertificate": True,
-        "no_color": True,
-        "http_headers": CLOUD_HTTP_HEADERS,
-        "extractor_args": CLOUD_EXTRACTOR_ARGS,
-    }
-
-    if ffmpeg_exe:
-        ydl_opts["ffmpeg_location"] = str(Path(ffmpeg_exe).parent)
+    })
 
     if download_type == "video":
         height = selected_format.get("height")
         fmt_id = selected_format.get("format_id")
         
+        # Robust format selection: Prefer compatible MP4/M4A streams
         if height and height > 0:
             if ffmpeg_ready:
-                ydl_opts["format"] = f"bestvideo[height<={height}]+bestaudio/best[height<={height}]/best"
+                ydl_opts["format"] = f"bestvideo[height<={height}][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<={height}]+bestaudio/best[height<={height}]/best"
             else:
-                ydl_opts["format"] = f"best[height<={height}]/best"
+                ydl_opts["format"] = f"best[height<={height}][ext=mp4]/best[height<={height}]/best"
         elif fmt_id:
             ydl_opts["format"] = f"{fmt_id}+bestaudio/best"
         else:
-            ydl_opts["format"] = "bestvideo+bestaudio/best"
+            ydl_opts["format"] = "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best"
             
         target_ext = container_pref.lower()
         if target_ext in ["mp4", "mkv"]:
             ydl_opts["merge_output_format"] = target_ext
             
     else:  # Audio mode
-        ydl_opts["format"] = "bestaudio/best"
+        ydl_opts["format"] = "bestaudio[ext=m4a]/bestaudio/best"
         if ffmpeg_ready:
             audio_mode = selected_format.get("audio_mode", "mp3")
             quality = selected_format.get("quality", "320")
@@ -170,27 +155,40 @@ def download_media(
 
     except yt_dlp.utils.DownloadError as de:
         clean_err = strip_ansi_codes(str(de))
-        logger.warning(f"Primary format download failed ({clean_err}), executing fallback...")
+        err_lower = clean_err.lower()
+        logger.error(f"Download error: {clean_err}")
         
-        # Robust fallback execution with iOS mobile client
-        try:
-            fallback_opts = dict(ydl_opts)
-            fallback_opts["format"] = "best[ext=mp4]/best"
-            fallback_opts["extractor_args"] = {"youtube": {"player_client": ["ios", "mweb"]}}
-            with yt_dlp.YoutubeDL(fallback_opts) as ydl:
-                info = ydl.extract_info(url, download=True)
-                filename = ydl.prepare_filename(info)
-                final_file = Path(filename)
-                return {
-                    "success": True,
-                    "filepath": str(final_file),
-                    "filename": final_file.name,
-                    "filesize": format_bytes(final_file.stat().st_size) if final_file.exists() else "N/A"
-                }
-        except Exception as fe:
-            logger.error(f"Fallback download failed: {fe}")
-            clean_fe = strip_ansi_codes(str(fe))
-            raise DownloadError(f"Unable to download media stream ({clean_fe}).")
+        # Categorized Error Handling (TASK 6)
+        if "403" in err_lower or "forbidden" in err_lower:
+            # Fallback format retry
+            logger.warning("HTTP 403 encountered, trying generic best format fallback...")
+            try:
+                fallback_opts = dict(ydl_opts)
+                fallback_opts["format"] = "best[ext=mp4]/best"
+                with yt_dlp.YoutubeDL(fallback_opts) as ydl:
+                    info = ydl.extract_info(url, download=True)
+                    filename = ydl.prepare_filename(info)
+                    final_file = Path(filename)
+                    return {
+                        "success": True,
+                        "filepath": str(final_file),
+                        "filename": final_file.name,
+                        "filesize": format_bytes(final_file.stat().st_size) if final_file.exists() else "N/A"
+                    }
+            except Exception as fe:
+                logger.error(f"Fallback download also failed: {fe}")
+                raise DownloadError("YouTube returned HTTP 403 Forbidden for this media stream on the cloud host. Try selecting a different quality option or audio mode.")
+
+        elif "ffmpeg" in err_lower and ("not found" in err_lower or "installed" in err_lower or "exec" in err_lower):
+            raise DownloadError("FFmpeg execution error. FFmpeg is required for merging separate streams.")
+        elif "private video" in err_lower:
+            raise DownloadError("This video is private and cannot be downloaded.")
+        elif "unavailable" in err_lower or "deleted" in err_lower:
+            raise DownloadError("This video is unavailable or has been removed.")
+        elif "network" in err_lower or "connection" in err_lower or "timed out" in err_lower:
+            raise DownloadError("Network error while connecting to YouTube servers.")
+        else:
+            raise DownloadError(f"Download error: {clean_err}")
 
     except Exception as e:
         logger.exception("Unexpected error during download")

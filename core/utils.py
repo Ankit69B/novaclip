@@ -1,9 +1,12 @@
 import logging
 import os
 import shutil
+import sys
+import platform
 import re
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Dict, Any
+import yt_dlp
 
 # Configure application logging
 LOG_DIR = Path(__file__).resolve().parent.parent / "logs"
@@ -19,11 +22,11 @@ logging.basicConfig(
     ]
 )
 
-logger = logging.getLogger("yt_downloader")
+logger = logging.getLogger("novaclip")
 
 
 def find_ffmpeg_executable() -> Optional[str]:
-    """Locate ffmpeg executable in system PATH or common Windows installation directories."""
+    """Locate ffmpeg executable in system PATH or common installation directories."""
     which_path = shutil.which("ffmpeg")
     if which_path:
         return which_path
@@ -50,6 +53,37 @@ def find_ffmpeg_executable() -> Optional[str]:
 def check_ffmpeg_available() -> bool:
     """Check if FFmpeg executable is present."""
     return find_ffmpeg_executable() is not None
+
+
+def get_base_ytdlp_opts(extra_opts: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Return standard, clean yt-dlp configuration options shared between extraction and downloading."""
+    ffmpeg_exe = find_ffmpeg_executable()
+    opts = {
+        'quiet': True,
+        'no_warnings': True,
+        'nocheckcertificate': True,
+        'no_color': True,
+    }
+    if ffmpeg_exe:
+        opts['ffmpeg_location'] = str(Path(ffmpeg_exe).parent)
+
+    if extra_opts:
+        opts.update(extra_opts)
+
+    return opts
+
+
+def get_system_diagnostics() -> Dict[str, Any]:
+    """Gather diagnostic info for Developer Mode."""
+    ffmpeg_path = find_ffmpeg_executable()
+    return {
+        "python_version": sys.version.split()[0],
+        "ytdlp_version": getattr(yt_dlp.version, "__version__", "Unknown"),
+        "ffmpeg_status": "Available" if ffmpeg_path else "Not Found",
+        "ffmpeg_path": ffmpeg_path or "N/A",
+        "os_platform": f"{platform.system()} {platform.release()} ({platform.architecture()[0]})",
+        "is_streamlit_cloud": os.environ.get("STREAMLIT_SERVER_PORT") is not None or Path("/app").exists()
+    }
 
 
 def sanitize_filename(filename: str) -> str:
