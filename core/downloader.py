@@ -96,16 +96,19 @@ def download_media(
         ydl_opts["ffmpeg_location"] = str(Path(ffmpeg_exe).parent)
 
     if download_type == "video":
+        height = selected_format.get("height")
         fmt_id = selected_format.get("format_id")
-        has_audio = selected_format.get("has_audio", False)
         
-        if has_audio:
-            ydl_opts["format"] = f"{fmt_id}/best"
-        else:
-            if not ffmpeg_ready:
-                ydl_opts["format"] = "best[ext=mp4]/best"
+        if height and height > 0:
+            # Use resolution height selector so yt-dlp dynamically fetches fresh stream signatures
+            if ffmpeg_ready:
+                ydl_opts["format"] = f"bestvideo[height<={height}]+bestaudio/best[height<={height}]/best"
             else:
-                ydl_opts["format"] = f"{fmt_id}+bestaudio/bestvideo+bestaudio/best"
+                ydl_opts["format"] = f"best[height<={height}]/best"
+        elif fmt_id:
+            ydl_opts["format"] = f"{fmt_id}+bestaudio/best"
+        else:
+            ydl_opts["format"] = "bestvideo+bestaudio/best"
             
         target_ext = container_pref.lower()
         if target_ext in ["mp4", "mkv"]:
@@ -124,7 +127,7 @@ def download_media(
             }]
 
     try:
-        logger.info(f"Starting download for {url} into {target_path} (FFmpeg: {ffmpeg_exe})")
+        logger.info(f"Starting download for {url} into {target_path} (Format: {ydl_opts.get('format')})")
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)
             filename = ydl.prepare_filename(info)
@@ -154,33 +157,27 @@ def download_media(
 
     except yt_dlp.utils.DownloadError as de:
         clean_err = strip_ansi_codes(str(de))
-        logger.error(f"Download error: {clean_err}")
+        logger.warning(f"Primary format download failed ({clean_err}), executing fallback...")
         
-        # Fallback handling
-        if "403" in clean_err.lower() or "forbidden" in clean_err.lower() or "sign in" in clean_err.lower():
-            logger.warning("Download error encountered, attempting fallback format download...")
-            try:
-                fallback_opts = dict(ydl_opts)
-                fallback_opts["format"] = "best[ext=mp4]/best"
-                with yt_dlp.YoutubeDL(fallback_opts) as ydl:
-                    info = ydl.extract_info(url, download=True)
-                    filename = ydl.prepare_filename(info)
-                    final_file = Path(filename)
-                    return {
-                        "success": True,
-                        "filepath": str(final_file),
-                        "filename": final_file.name,
-                        "filesize": format_bytes(final_file.stat().st_size) if final_file.exists() else "N/A"
-                    }
-            except Exception as fe:
-                logger.error(f"Fallback download also failed: {fe}")
-                raise DownloadError("YouTube restricted this video format. Try selecting a different quality option.")
-                
-        if "ffmpeg is not installed" in clean_err.lower():
-            raise DownloadError(
-                "FFmpeg is missing on your system. Please restart your Streamlit app or pick a format marked **[Includes Audio]**."
-            )
-        raise DownloadError(f"Download failed: {clean_err}")
+        # Robust fallback execution with best available format
+        try:
+            fallback_opts = dict(ydl_opts)
+            fallback_opts["format"] = "bestvideo+bestaudio/best"
+            with yt_dlp.YoutubeDL(fallback_opts) as ydl:
+                info = ydl.extract_info(url, download=True)
+                filename = ydl.prepare_filename(info)
+                final_file = Path(filename)
+                return {
+                    "success": True,
+                    "filepath": str(final_file),
+                    "filename": final_file.name,
+                    "filesize": format_bytes(final_file.stat().st_size) if final_file.exists() else "N/A"
+                }
+        except Exception as fe:
+            logger.error(f"Fallback download failed: {fe}")
+            clean_fe = strip_ansi_codes(str(fe))
+            raise DownloadError(f"Unable to download media stream ({clean_fe}).")
+
     except Exception as e:
         logger.exception("Unexpected error during download")
         raise DownloadError("An unexpected error occurred during media download.")
