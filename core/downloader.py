@@ -13,6 +13,19 @@ from core.utils import (
     strip_ansi_codes
 )
 
+YTDLP_CLOUD_HEADERS = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+    'Accept-Language': 'en-US,en;q=0.9',
+}
+
+YTDLP_EXTRACTOR_ARGS = {
+    'youtube': {
+        'player_client': ['mweb', 'android', 'ios', 'web'],
+        'player_skip': ['webpage', 'configs'],
+    }
+}
+
 
 class DownloadError(Exception):
     """Custom exception for download operations."""
@@ -91,6 +104,8 @@ def download_media(
         "no_warnings": True,
         "nocheckcertificate": True,
         "no_color": True,
+        "http_headers": YTDLP_CLOUD_HEADERS,
+        "extractor_args": YTDLP_EXTRACTOR_ARGS,
     }
 
     if ffmpeg_exe:
@@ -101,15 +116,13 @@ def download_media(
         has_audio = selected_format.get("has_audio", False)
         
         if has_audio:
-            ydl_opts["format"] = fmt_id
+            ydl_opts["format"] = f"{fmt_id}/best"
         else:
             if not ffmpeg_ready:
-                raise DownloadError(
-                    "FFmpeg is missing on your system, which is required to merge high-quality video & audio streams.\n\n"
-                    "👉 Select a format marked as **[Includes Audio]** (e.g. 720p / 360p)."
-                )
-            # Video only stream - download selected format + best compatible audio and merge with FFmpeg
-            ydl_opts["format"] = f"{fmt_id}+bestaudio/best"
+                # If FFmpeg is missing, fall back to best pre-merged format
+                ydl_opts["format"] = "best[ext=mp4]/best"
+            else:
+                ydl_opts["format"] = f"{fmt_id}+bestaudio/bestvideo+bestaudio/best"
             
         target_ext = container_pref.lower()
         if target_ext in ["mp4", "mkv"]:
@@ -161,6 +174,27 @@ def download_media(
     except yt_dlp.utils.DownloadError as de:
         clean_err = strip_ansi_codes(str(de))
         logger.error(f"Download error: {clean_err}")
+        
+        if "403" in clean_err.lower() or "forbidden" in clean_err.lower():
+            # Attempt fallback download with generic best format for cloud IP restrictions
+            logger.warning("HTTP 403 encountered, attempting fallback format download...")
+            try:
+                fallback_opts = dict(ydl_opts)
+                fallback_opts["format"] = "best[ext=mp4]/best"
+                with yt_dlp.YoutubeDL(fallback_opts) as ydl:
+                    info = ydl.extract_info(url, download=True)
+                    filename = ydl.prepare_filename(info)
+                    final_file = Path(filename)
+                    return {
+                        "success": True,
+                        "filepath": str(final_file),
+                        "filename": final_file.name,
+                        "filesize": format_bytes(final_file.stat().st_size) if final_file.exists() else "N/A"
+                    }
+            except Exception as fe:
+                logger.error(f"Fallback download also failed: {fe}")
+                raise DownloadError("YouTube restricted cloud access for this format (HTTP 403 Forbidden). Try selecting a lower resolution or standard format.")
+                
         if "ffmpeg is not installed" in clean_err.lower():
             raise DownloadError(
                 "FFmpeg is missing on your system. Please restart your Streamlit app or pick a format marked **[Includes Audio]**."

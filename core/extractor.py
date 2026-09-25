@@ -3,6 +3,20 @@ from typing import Dict, Any, List, Optional
 import yt_dlp
 from core.utils import logger, format_bytes
 
+# Shared yt-dlp configuration to prevent HTTP 403 Forbidden errors on cloud servers
+YTDLP_CLOUD_HEADERS = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+    'Accept-Language': 'en-US,en;q=0.9',
+}
+
+YTDLP_EXTRACTOR_ARGS = {
+    'youtube': {
+        'player_client': ['mweb', 'android', 'ios', 'web'],
+        'player_skip': ['webpage', 'configs'],
+    }
+}
+
 
 class ExtractionError(Exception):
     """Custom exception for metadata extraction failures."""
@@ -37,6 +51,9 @@ def extract_video_info(url: str) -> Dict[str, Any]:
         'skip_download': True,
         'extract_flat': False,
         'no_color': True,
+        'nocheckcertificate': True,
+        'http_headers': YTDLP_CLOUD_HEADERS,
+        'extractor_args': YTDLP_EXTRACTOR_ARGS,
     }
 
     try:
@@ -81,6 +98,8 @@ def extract_video_info(url: str) -> Dict[str, Any]:
             raise ExtractionError("This video requires sign-in, membership, or special access.")
         elif "copyright" in err_str:
             raise ExtractionError("This video is unavailable due to copyright restriction.")
+        elif "403" in err_str or "forbidden" in err_str:
+            raise ExtractionError("YouTube restricted cloud access for this video format. Please try selecting a different format or quality option.")
         else:
             raise ExtractionError("Unable to access this video. It may be restricted, private, or unavailable.")
 
